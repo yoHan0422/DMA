@@ -38,6 +38,9 @@ internal sealed class LauncherForm : Form
     private const string ReleaseApi = "https://api.github.com/repos/" + Repo + "/releases?per_page=100";
     private static readonly string DataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DMA", "Launcher");
     private static readonly string VersionsRoot = Path.Combine(DataRoot, "versions");
+    private static readonly string SettingsRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DMA");
+    private static readonly string LegacySettingsRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DMA.Gui");
+    private const string ConfigurationReadyFile = ".launcher-config-ready";
     private static readonly string LogPath = Path.Combine(DataRoot, "launcher.log");
     private static readonly HttpClient Http = MakeHttpClient();
 
@@ -194,11 +197,72 @@ internal sealed class LauncherForm : Form
                 throw new FileNotFoundException("선택한 버전의 실행 파일이 없고 다운로드할 배포본도 없습니다.");
             await DownloadAndInstallAsync(remote, token);
         }
+        // First installation, version change, or a failed-start recovery:
+        // remove old settings from DMA's read paths while preserving backup copies.
+        string readyFile = Path.Combine(destination, ConfigurationReadyFile);
+        if (forceReinstall || !File.Exists(readyFile))
+        {
+            Status("이전 DMA 설정을 정리하고 새 버전을 준비합니다.");
+            ArchiveLegacySettings();
+            File.WriteAllText(readyFile, DateTimeOffset.UtcNow.ToString("O"));
+        }
         UpdateInstalledVersion();
         await LaunchAndVerifyAsync(destination, token);
+        RemoveSupersededInstallations(target);
     }
 
     private static string VersionDirectory(Version version) => Path.Combine(VersionsRoot, version.ToString(3));
+
+    // DMA v0.2.31 reads settings.json and the five UserDataSafety backups
+    // in both current and legacy locations. All other user files are retained.
+    private static bool IsPreviousSettingsFile(string name) =>
+        name.Equals("settings.json", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("settings.json.bak", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("settings.json.pre-v0.2.5.bak", StringComparison.OrdinalIgnoreCase) ||
+        Regex.IsMatch(name, @"^settings\.json\.bak\.[1-4]$", RegexOptions.IgnoreCase) ||
+        name.StartsWith("settings.json.corrupt-", StringComparison.OrdinalIgnoreCase);
+
+    private void ArchiveLegacySettings()
+    {
+        string backup = Path.Combine(DataRoot, "settings-backups",
+            DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + "_" + Guid.NewGuid().ToString("N")[..8]);
+        int archived = 0;
+        foreach (var (source, label) in new[] { (SettingsRoot, "DMA"), (LegacySettingsRoot, "DMA.Gui") })
+        {
+            if (!Directory.Exists(source)) continue;
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly)
+                .Where(path => IsPreviousSettingsFile(Path.GetFileName(path))))
+            {
+                string folder = Path.Combine(backup, label);
+                Directory.CreateDirectory(folder);
+                File.Move(file, Path.Combine(folder, Path.GetFileName(file)));
+                archived++;
+            }
+            // Do not remove any unrelated legacy files or folders.
+        }
+        Log(archived == 0 ? "기존 DMA 설정 파일 없음 · 기본 설정으로 시작" :
+            $"기존 DMA 설정 {archived}개 정리 완료 · 백업 보관: {backup}");
+    }
+
+    private void RemoveSupersededInstallations(Version current)
+    {
+        if (!Directory.Exists(VersionsRoot)) return;
+        foreach (var dir in Directory.EnumerateDirectories(VersionsRoot))
+        {
+            if (!Version.TryParse(Path.GetFileName(dir), out var installed) || installed == current) continue;
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+                Log("구버전 DMA 설치 폴더 정리: " + dir);
+            }
+            catch (Exception ex)
+            {
+                // A running older DMA may lock its installation; never delete
+                // launcher logs, PROTECT records, or the working DMA version.
+                Log("구버전 DMA 폴더 정리 보류: " + dir + " · " + ex.Message);
+            }
+        }
+    }
 
     private static (Version Version, string Directory)? FindLatestLocal()
     {
@@ -334,20 +398,34 @@ internal sealed class LauncherForm : Form
                 UseShellExecute = false
             }) ?? throw new InvalidOperationException("DMA.exe 실행 결과가 null입니다.");
             Log("DMA 프로세스 시작 · PID=" + process.Id);
+            DateTimeOffset? stableSince = null;
             for (int i = 0; i < 150; i++)
             {
                 token.ThrowIfCancellationRequested();
                 process.Refresh();
-                if (process.HasExited) throw new InvalidOperationException("DMA 메인 창 표시 전 종료 · 종료 코드 " + process.ExitCode);
-                if (process.MainWindowHandle != IntPtr.Zero)
+                if (process.HasExited)
+                    throw new InvalidOperationException("DMA 실행 중 종료 · 종료 코드 " + process.ExitCode);
+                string title = process.MainWindowTitle?.Trim() ?? "";
+                if (title.Contains("DMA 설정 복구 필요", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("DMA 설정 복구 경고창 감지 · 이전 설정 정리 후 재설치");
+                if (process.MainWindowHandle != IntPtr.Zero &&
+                    title.Equals("DMA", StringComparison.OrdinalIgnoreCase))
                 {
-                    verified = true;
-                    Log("DMA 메인 창 감지 · v" + Path.GetFileName(dir));
-                    return;
+                    stableSince ??= DateTimeOffset.UtcNow;
+                    if (DateTimeOffset.UtcNow - stableSince.Value >= TimeSpan.FromSeconds(5))
+                    {
+                        process.Refresh();
+                        if (process.HasExited)
+                            throw new InvalidOperationException("DMA 실행 직후 종료 · 종료 코드 " + process.ExitCode);
+                        verified = true;
+                        Log("DMA 메인 창 정상 유지 확인 · v" + Path.GetFileName(dir));
+                        return;
+                    }
                 }
+                else stableSince = null;
                 await Task.Delay(200, token);
             }
-            throw new TimeoutException("DMA 실행 후 30초 동안 메인 창이 표시되지 않았습니다.");
+            throw new TimeoutException("DMA 정상 메인 창이 30초 안에 안정적으로 표시되지 않았습니다.");
         }
         finally
         {

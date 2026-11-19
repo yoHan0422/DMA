@@ -23,17 +23,17 @@ jobs:
           if (!(Test-Path output/DMA_Launcher.exe)) { throw 'DMA_Launcher.exe missing' }
       - uses: actions/upload-artifact@v4
         with:
-          name: DMA_Launcher_v1.0.0
+          name: DMA_Launcher_v1.0.1
           path: output/DMA_Launcher.exe
       - name: Publish GitHub launcher release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view launcher-v1.0.0 -R ${{ github.repository }} *> $null
+          gh release view launcher-v1.0.1 -R ${{ github.repository }} *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload launcher-v1.0.0 output/DMA_Launcher.exe --clobber -R ${{ github.repository }}
+            gh release upload launcher-v1.0.1 output/DMA_Launcher.exe --clobber -R ${{ github.repository }}
           } else {
-            gh release create launcher-v1.0.0 output/DMA_Launcher.exe -R ${{ github.repository }} --title 'DMA Launcher v1.0.0' --notes 'Windows x64 self-contained DMA launcher. The DMA program itself is distributed as a separate DMA_v0.2.31.zip release asset.'
+            gh release create launcher-v1.0.1 output/DMA_Launcher.exe -R ${{ github.repository }} --title 'DMA Launcher v1.0.1' --notes 'Windows x64 self-contained DMA launcher. The DMA program itself is distributed as a separate DMA_v0.2.31.zip release asset.'
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

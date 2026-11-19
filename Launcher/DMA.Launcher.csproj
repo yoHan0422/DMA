@@ -8,5 +8,6 @@
     <AssemblyName>DMA_Launcher</AssemblyName>
     <Version>1.0.0</Version>
     <ApplicationTitle>DMA Launcher</ApplicationTitle>
+    <ApplicationIcon>Assets\DMA_Ark.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>

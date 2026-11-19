@@ -55,6 +55,7 @@ internal sealed class LauncherForm : Form
     internal LauncherForm()
     {
         Text = "DMA Launcher";
+        Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? Icon;
         ClientSize = new Size(570, 432);
         MinimumSize = MaximumSize = Size;
         StartPosition = FormStartPosition.CenterScreen;
